@@ -1,13 +1,15 @@
+from functools import partial
+from pprint import pprint
 from slackclient import SlackClient
-import logging
+from dateutil.parser import *
+from datetime import *
 import asyncio
 import datetime
-from functools import partial
 import json
-import requests
+import logging
 import os
-from pprint import pprint
-
+import requests
+import arrow
 
 if 'SLACK_TOKEN' in os.environ:
     LUNCHTIME_GUY = os.environ['SLACK_TOKEN']
@@ -20,25 +22,6 @@ logging.basicConfig(
     datefmt='%m-%d %H:%M:%S'
     )
 
-conn = r.connect("localhost", 28015)
-
-try:
-    r.db_create("asyncio").run(conn)
-except:
-    pass
-try:
-    r.db("asyncio").table_create("lunch").run(conn)
-except:
-    pass
-try:
-    r.db("asyncio").table_create("lunch").run(conn)
-except:
-    pass
-
-conn.close()
-
-r.set_loop_type('asyncio')
-db = r.db("asyncio").table("lunch")
 client = SlackClient(LUNCHTIME_GUY)
 current_channel = "#random"
 
@@ -50,109 +33,63 @@ def thumbs(text):
     else:
         return False
 
+async def lunchtime():
+    r = await loop.run_in_executor(None, partial(requests.get, "https://zerocater.com/m/73DB/json"))
+    lunch_json = json.loads(r.text)
+    title = lunch_json['meals'][0]['meal_name']
+    vendor = lunch_json['meals'][0]['vendor_name']
+    arriving_text = lunch_json['meals'][0]['meal_time']
+    arriving_datetime = parse(arriving_text)
 
-async def get_present_users(client):
+    menu_items = []
 
-    res = await loop.run_in_executor(client.api_call("users.list", presence=True))
-    user_list = json.loads(bytes.decode(res))['members']
-    present_users = [user for user in user_list.items() if user['presence'] == 'active']
+    for x in lunch_json['meals'][0]['meal_items']:
+    	out = u"_{}_\n{}".format(
+    		x['name'],
+    		x['description'].strip()
+    	)
+    	menu_items.append(out)
 
-    return present_users
+    menu_items = "\n\n".join(menu_items)
 
-async def ask_present_users(client):
+    lunch_text = r"""
+%s | %s | arriving %s
 
-    # async for user in get_present_users():
-    message = {
-        "channel": current_channel,
-        "text": 'Howdy <!here>, how did you like your lunch today? Give a :+1: or :-1: to @lunchtimeguy (v2) to vote!',
-        "as_user": True,
-        "icon_emoji": ":yum:"
-    }
+%s
 
-    await loop.run_in_executor(None, partial(client.api_call, "chat.postMessage", **message))
+""" % (title, vendor, arrow.get(arriving_datetime).humanize(), menu_items)
 
-async def listen_for_responses(client):
+    #Add the image if it exists
+    if 'vendor_image' in lunch_json['meals'][0]:
+    	lunch_text += "\n{}".format(lunch_json['meals'][0]['vendor_image'])
+
+    return lunch_text
 
 
-    raw_users = await loop.run_in_executor(None, client.api_call, "users.list")
-    logging.info(raw_users)
-    user_list = json.loads(bytes.decode(raw_users))['members']
 
-    user_map = {}
-    for user in user_list:
-        user_map[user['id']] = user['name']
 
-    conn = await r.connect("localhost", 28015)
-    todays_date = datetime.datetime.today().strftime("%Y-%m-%d")
-    await db.insert({
-        "id": todays_date,
-        "score": 0
-    }).run(conn)
-    conn.close()
-
-    already_voted = set()
-
+async def listen_for_lunchtime(client):
     if client.rtm_connect():
         logging.info("Successful Slack RTM connection, entering subscribe loop")
         while True:
             events = await loop.run_in_executor(None, client.rtm_read)
             for event in events:
-                if "type" in event:
-                    if event["type"] == "message" and "text" in event:
-                        if "score" in event["text"] and event['user'] != "U0L810UD6":
-                            logging.info(event)
+                if 'type' in event and event["type"] == "message" and "text" in event and event['text'].lower() == 'lunchtime':
+                    pprint(event)
+                    lunch_text = await lunchtime()
 
-                            score = await db.get(todays_date)['score'].run(conn)
-                            logging.info(score)
+                    message = {
+                        "channel": event['channel'],
+                        "text": lunch_text,
+                        "as_user": True,
+                        "icon_emoji": ":yum:"
+                    }
 
-                            message = {
-                                "channel": current_channel,
-                                "text": 'The lunchtime score for today is {}'.format(score),
-                                "as_user": True,
-                                "icon_emoji": ":yum:"
-                            }
+                    await loop.run_in_executor(None, partial(client.api_call, "chat.postMessage", **message))
 
-                            await loop.run_in_executor(None, partial(client.api_call, "chat.postMessage", **message))
-
-                        elif "<@U0L810UD6>" in event["text"] and event['user'] in already_voted:
-                            logging.info(event)
-
-                            name = user_map[event['user']]
-                            message = {
-                                "channel": current_channel,
-                                "text": 'You\'ve already voted @{}, be quiet.'.format(name),
-                                "as_user": True,
-                                "icon_emoji": ":yum:"
-                            }
-
-                            await loop.run_in_executor(None, partial(client.api_call, "chat.postMessage", **message))
-
-                        elif "<@U0L810UD6>" in event["text"] and thumbs(event["text"]):
-                            logging.info(event)
-
-                            update_doc = None
-                            if ":+1:" in event["text"] or ":thumbsup:" in event["text"]:
-                                update_doc = {
-                                    "score": r.row["score"].add(1)
-                                }
-                            elif ":-1:" in event["text"] or ":thumbsdown:" in event["text"]:
-                                update_doc = {
-                                    "score": r.row["score"].sub(1)
-                                }
-
-                            if update_doc:
-                                conn = await r.connect("localhost", 28015)
-                                await db \
-                                    .get(todays_date)\
-                                    .update(update_doc)\
-                                    .run(conn)
-                            already_voted.add(event['user'])
-
-            await asyncio.sleep(0.2)
 
 loop = asyncio.get_event_loop()
-# loop.create_task(ask_present_users(client))
-loop.create_task(listen_for_responses(client))
+loop.create_task(listen_for_lunchtime(client))
 
 try:
     loop.run_forever()
