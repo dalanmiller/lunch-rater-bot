@@ -10,7 +10,7 @@ from pprint import pprint
 
 
 if 'SLACK_TOKEN' in os.environ:
-    LUNCHTIME_GUY = sys.env['SLACK_TOKEN']
+    LUNCHTIME_GUY = os.environ['SLACK_TOKEN']
 else:
     from secrets import LUNCHTIME_GUY
 
