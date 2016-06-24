@@ -5,7 +5,6 @@ import datetime
 from functools import partial
 import json
 import requests
-import rethinkdb as r
 import os
 from pprint import pprint
 
