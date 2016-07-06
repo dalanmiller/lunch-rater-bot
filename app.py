@@ -72,20 +72,24 @@ async def listen_for_lunchtime(client):
     if client.rtm_connect():
         logging.info("Successful Slack RTM connection, entering subscribe loop")
         while True:
-            events = await loop.run_in_executor(None, client.rtm_read)
-            for event in events:
-                if 'type' in event and event["type"] == "message" and "text" in event and event['text'].lower() == 'lunchtime':
-                    pprint(event)
-                    lunch_text = await lunchtime()
+            try:
+                events = await loop.run_in_executor(None, client.rtm_read)
+                for event in events:
+                    if 'type' in event and event["type"] == "message" and "text" in event and event['text'].lower() == 'lunchtime':
+                        pprint(event)
+                        lunch_text = await lunchtime()
 
-                    message = {
-                        "channel": event['channel'],
-                        "text": lunch_text,
-                        "as_user": True,
-                        "icon_emoji": ":yum:"
-                    }
+                        message = {
+                            "channel": event['channel'],
+                            "text": lunch_text,
+                            "as_user": True,
+                            "icon_emoji": ":yum:"
+                        }
 
-                    await loop.run_in_executor(None, partial(client.api_call, "chat.postMessage", **message))
+                        await loop.run_in_executor(None, partial(client.api_call, "chat.postMessage", **message))
+            except Exception as e:
+                print(e)
+                client.rtm_connect()
 
 
 loop = asyncio.get_event_loop()
